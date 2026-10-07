@@ -1,0 +1,143 @@
+import os
+import tempfile
+
+import fal_client
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import (
+    Application,
+    CommandHandler,
+    MessageHandler,
+    CallbackQueryHandler,
+    ContextTypes,
+    filters,
+)
+
+BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
+FAL_KEY = os.environ["FAL_KEY"]
+
+os.environ["FAL_KEY"] = FAL_KEY
+
+MODEL = "minimax/h3-max-turbo/image-to-video"
+
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    keyboard = [
+        [InlineKeyboardButton("🎬 Сүрөттөн видео", callback_data="video")],
+        [InlineKeyboardButton("🔥 Trend эффект", callback_data="trend")],
+    ]
+
+    await update.message.reply_text(
+        "🔥 Trend Video AI'га кош келиңиз!\n\n"
+        "📸 Сүрөт жөнөтүңүз.\n"
+        "Мен аны AI менен кыймылдатып, видео кылып берем.\n\n"
+        "🎬 Азыркы версия: 5 секунддук видео",
+        reply_markup=InlineKeyboardMarkup(keyboard),
+    )
+
+
+async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    if query.data in ("video", "trend"):
+        context.user_data["mode"] = query.data
+        await query.message.reply_text(
+            "📸 Эми сүрөтүңүздү жөнөтүңүз."
+        )
+
+
+async def photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    message = update.message
+
+    if not message.photo:
+        return
+
+    status = await message.reply_text(
+        "⏳ Сүрөт кабыл алынды.\n"
+        "🤖 AI видео даярдап жатат..."
+    )
+
+    temp_path = None
+
+    try:
+        photo_file = await message.photo[-1].get_file()
+
+        with tempfile.NamedTemporaryFile(
+            suffix=".jpg", delete=False
+        ) as temp:
+            temp_path = temp.name
+
+        await photo_file.download_to_drive(temp_path)
+
+        # Upload image to fal.ai
+        image_url = fal_client.upload_file(temp_path)
+
+        prompt = (
+            "Animate the person and scene naturally. "
+            "Add realistic subtle body movement, gentle camera motion, "
+            "natural facial movement and cinematic lighting. "
+            "Keep the person's identity, face, clothing and background consistent. "
+            "Make it look like a high-quality viral social media video."
+        )
+
+        result = fal_client.subscribe(
+            MODEL,
+            arguments={
+                "prompt": prompt,
+                "image_url": image_url,
+                "duration": 5,
+                "resolution": "768P",
+                "prompt_expansion_mode": "balanced",
+                "enable_safety_checker": True,
+            },
+        )
+
+        video_url = result["video"]["url"]
+
+        await status.edit_text(
+            "✅ Видео даяр болду!\n"
+            "📤 Telegram'га жөнөтүп жатам..."
+        )
+
+        await message.reply_video(
+            video=video_url,
+            caption="🔥 Trend Video AI\n\n"
+                    "Сүрөттөн AI видео жасалды."
+        )
+
+        await status.delete()
+
+    except Exception as e:
+        print("ERROR:", repr(e))
+
+        await status.edit_text(
+            "❌ Видео жасоодо ката кетти.\n\n"
+            "Кийин кайра аракет кылып көрүңүз."
+        )
+
+    finally:
+        if temp_path and os.path.exists(temp_path):
+            os.remove(temp_path)
+
+
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "📸 Сүрөт жөнөтүңүз — мен аны AI видео кылып берем.\n\n"
+        "🎬 /start — башкы меню"
+    )
+
+
+def main():
+    app = Application.builder().token(BOT_TOKEN).build()
+
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("help", help_command))
+    app.add_handler(CallbackQueryHandler(button))
+    app.add_handler(MessageHandler(filters.PHOTO, photo))
+
+    print("Trend Video AI started...")
+    app.run_polling()
+
+
+if __name__ == "__main__":
+    main()
